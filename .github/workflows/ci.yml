@@ -21,6 +21,42 @@ jobs:
     - name: Install dependencies
       run: go mod download
 
+    - name: Start Postgres
+      run: |
+        docker run -d --name ci-postgres \
+          -p 5433:5432 \
+          -e POSTGRES_USER=s3vault \
+          -e POSTGRES_PASSWORD=s3vault \
+          -e POSTGRES_DB=s3vault \
+          postgres:16-alpine
+        # Ждём готовности Postgres (до 30 секунд).
+        for i in $(seq 1 30); do
+          if docker exec ci-postgres pg_isready -U s3vault -d s3vault >/dev/null 2>&1; then
+            echo "postgres is ready"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "postgres did not become ready in 30s" >&2
+            docker logs ci-postgres >&2
+            exit 1
+          fi
+          sleep 1
+        done
+
+    - name: Apply migrations
+      run: |
+        # Применяем миграции из internal/metadata/migrations/*.up.sql
+        # в порядке возрастания (000001, 000002, ...).
+        for f in $(ls internal/metadata/migrations/*.up.sql | sort); do
+          echo "applying $f"
+          PGPASSWORD=s3vault psql \
+            -h localhost -p 5433 -U s3vault -d s3vault \
+            -v ON_ERROR_STOP=1 \
+            -f "$f"
+        done
+      env:
+        PGPASSWORD: s3vault
+
     - name: Build
       run: go build -v ./...
 
@@ -34,6 +70,10 @@ jobs:
       uses: golangci/golangci-lint-action@v4
       with:
         version: latest
+
+    - name: Stop Postgres
+      if: always()
+      run: docker rm -f ci-postgres || true
 
   sentinel-failover:
     name: Sentinel failover (chaos)
