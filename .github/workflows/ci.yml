@@ -29,8 +29,7 @@ jobs:
           -e POSTGRES_PASSWORD=s3vault \
           -e POSTGRES_DB=s3vault \
           postgres:16-alpine
-        # pg_isready возвращает "ready" слишком рано (порт открыт, но БД
-        # ещё инициализируется). Ждём реальный SQL-запрос: SELECT 1.
+        # pg_isready возвращает "ready" слишком рано. Ждём SELECT 1.
         for i in $(seq 1 30); do
           if docker exec ci-postgres psql -U s3vault -d s3vault -c 'SELECT 1' >/dev/null 2>&1; then
             echo "postgres is ready (SELECT 1 ok)"
@@ -66,7 +65,7 @@ jobs:
       run: go vet ./...
 
     - name: Lint
-      uses: golangci/golangci-lint-action@v4
+      uses: golangci/golangci-lint-action@v6
       with:
         version: latest
 
@@ -157,7 +156,6 @@ jobs:
 
     - name: Start s3vault
       run: |
-        # Запускаем сервер в фоне с DATABASE_URL, ждём /healthz.
         DATABASE_URL="postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable" \
           go run ./cmd/server >s3vault.log 2>&1 &
         echo $! > s3vault.pid
