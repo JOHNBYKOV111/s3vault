@@ -29,9 +29,11 @@ jobs:
           -e POSTGRES_PASSWORD=s3vault \
           -e POSTGRES_DB=s3vault \
           postgres:16-alpine
+        # pg_isready возвращает "ready" слишком рано (порт открыт, но БД
+        # ещё инициализируется). Ждём реальный SQL-запрос: SELECT 1.
         for i in $(seq 1 30); do
-          if docker exec ci-postgres pg_isready -U s3vault -d s3vault >/dev/null 2>&1; then
-            echo "postgres is ready"
+          if docker exec ci-postgres psql -U s3vault -d s3vault -c 'SELECT 1' >/dev/null 2>&1; then
+            echo "postgres is ready (SELECT 1 ok)"
             break
           fi
           if [ "$i" -eq 30 ]; then
@@ -127,9 +129,10 @@ jobs:
           -e POSTGRES_PASSWORD=s3vault \
           -e POSTGRES_DB=s3vault \
           postgres:16-alpine
+        # pg_isready возвращает "ready" слишком рано. Ждём SELECT 1.
         for i in $(seq 1 30); do
-          if docker exec ci-postgres-e2e pg_isready -U s3vault -d s3vault >/dev/null 2>&1; then
-            echo "postgres is ready"
+          if docker exec ci-postgres-e2e psql -U s3vault -d s3vault -c 'SELECT 1' >/dev/null 2>&1; then
+            echo "postgres is ready (SELECT 1 ok)"
             break
           fi
           if [ "$i" -eq 30 ]; then
