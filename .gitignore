@@ -24,7 +24,7 @@ deploy/grafana/grafanadata/
 *.so
 *.dylib
 s3vault
-redis-sentinel-check
+/redis-sentinel-check
 
 # Test / coverage
 coverage.out
