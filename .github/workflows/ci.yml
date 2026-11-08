@@ -29,7 +29,6 @@ jobs:
           -e POSTGRES_PASSWORD=s3vault \
           -e POSTGRES_DB=s3vault \
           postgres:16-alpine
-        # Ждём готовности Postgres (до 30 секунд).
         for i in $(seq 1 30); do
           if docker exec ci-postgres pg_isready -U s3vault -d s3vault >/dev/null 2>&1; then
             echo "postgres is ready"
@@ -45,8 +44,6 @@ jobs:
 
     - name: Apply migrations
       run: |
-        # Применяем миграции из internal/metadata/migrations/*.up.sql
-        # в порядке возрастания (000001, 000002, ...).
         for f in $(ls internal/metadata/migrations/*.up.sql | sort); do
           echo "applying $f"
           PGPASSWORD=s3vault psql \
@@ -91,8 +88,100 @@ jobs:
     - name: Install dependencies
       run: go mod download
 
+    - name: Ensure Docker Compose v2
+      run: |
+        if ! docker compose version >/dev/null 2>&1; then
+          echo "docker compose v2 not found, installing docker-compose-plugin"
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin
+        fi
+        docker compose version
+
     - name: Ensure script is executable
       run: chmod +x scripts/chaos/sentinel-failover.sh
 
     - name: Run Sentinel failover chaos test
       run: ./scripts/chaos/sentinel-failover.sh
+
+  e2e:
+    name: E2E (s3vault + AWS SDK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Install dependencies
+      run: go mod download
+
+    - name: Start Postgres
+      run: |
+        docker run -d --name ci-postgres-e2e \
+          -p 5433:5432 \
+          -e POSTGRES_USER=s3vault \
+          -e POSTGRES_PASSWORD=s3vault \
+          -e POSTGRES_DB=s3vault \
+          postgres:16-alpine
+        for i in $(seq 1 30); do
+          if docker exec ci-postgres-e2e pg_isready -U s3vault -d s3vault >/dev/null 2>&1; then
+            echo "postgres is ready"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "postgres did not become ready in 30s" >&2
+            docker logs ci-postgres-e2e >&2
+            exit 1
+          fi
+          sleep 1
+        done
+
+    - name: Apply migrations
+      run: |
+        for f in $(ls internal/metadata/migrations/*.up.sql | sort); do
+          echo "applying $f"
+          PGPASSWORD=s3vault psql \
+            -h localhost -p 5433 -U s3vault -d s3vault \
+            -v ON_ERROR_STOP=1 \
+            -f "$f"
+        done
+      env:
+        PGPASSWORD: s3vault
+
+    - name: Start s3vault
+      run: |
+        # Запускаем сервер в фоне с DATABASE_URL, ждём /healthz.
+        DATABASE_URL="postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable" \
+          go run ./cmd/server >s3vault.log 2>&1 &
+        echo $! > s3vault.pid
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:9000/healthz >/dev/null 2>&1; then
+            echo "s3vault is up"
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "s3vault did not become ready in 30s" >&2
+            cat s3vault.log >&2
+            exit 1
+          fi
+          sleep 1
+        done
+
+    - name: Run E2E tests
+      run: go test -v -race -tags=e2e ./internal/s3api/ -run TestS3Conformance
+
+    - name: Stop s3vault
+      if: always()
+      run: |
+        if [ -f s3vault.pid ]; then
+          kill "$(cat s3vault.pid)" 2>/dev/null || true
+        fi
+        pkill -f "cmd/server" 2>/dev/null || true
+
+    - name: Stop Postgres
+      if: always()
+      run: docker rm -f ci-postgres-e2e || true

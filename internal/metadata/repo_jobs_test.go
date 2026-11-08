@@ -4,22 +4,14 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestJobsQueue(t *testing.T) {
-	connString := "postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	repo, cleanup := setupTestRepoWithContainer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	pool, err := pgxpool.New(ctx, connString)
-	if err != nil {
-		t.Fatalf("failed to connect to db: %v", err)
-	}
-	defer pool.Close()
-
-	repo := &PostgresRepo{pool: pool}
 
 	// 1. Ставим задачу в очередь
 	payload := []byte(`{"bucket":"test-bucket","key":"test-key"}`)
@@ -27,7 +19,6 @@ func TestJobsQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to enqueue job: %v", err)
 	}
-	defer pool.Exec(ctx, "DELETE FROM jobs WHERE id = $1", jobID)
 
 	// 2. Воркер 1 берет задачу
 	job1, err := repo.Dequeue(ctx, "worker-1")
@@ -58,7 +49,7 @@ func TestJobsQueue(t *testing.T) {
 
 	// 5. Проверяем, что задача помечена как done
 	var status string
-	err = pool.QueryRow(ctx, "SELECT status FROM jobs WHERE id = $1", job1.ID).Scan(&status)
+	err = repo.GetPool().QueryRow(ctx, "SELECT status FROM jobs WHERE id = $1", job1.ID).Scan(&status)
 	if err != nil {
 		t.Fatalf("failed to query job status: %v", err)
 	}
