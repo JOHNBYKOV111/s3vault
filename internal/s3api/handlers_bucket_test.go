@@ -14,32 +14,27 @@ import (
 	"github.com/johnbykov1989/s3vault/internal/metadata"
 )
 
-// setupTestRepo создает реальный репозиторий для теста.
-func setupTestRepo(t *testing.T) metadata.Repository {
-	t.Helper()
-
-	connString := "postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	repo, err := metadata.NewPostgresRepo(ctx, connString)
-	if err != nil {
-		t.Fatalf("failed to connect to test db: %v", err)
-	}
-	return repo
-}
-
 func TestHandleCreateBucket(t *testing.T) {
-	repo := setupTestRepo(t)
-	defer repo.(*metadata.PostgresRepo).Close()
+	repo, cleanup := metadata.SetupTestRepoWithContainer(t)
+	defer cleanup()
 
 	store := &mockStore{}
 	handler := NewObjectHandler(store, repo)
 
-	// Уникальное имя бакета, чтобы не конфликтовать
-	bucketName := fmt.Sprintf("test-handler-bucket-%d", time.Now().UnixNano())
+	ctx := context.Background()
 
+	// 1. Создаем tenant (хендлер требует tenant_id для создания бакета)
+	tenant, err := repo.CreateTenant(ctx, fmt.Sprintf("test-tenant-bucket-%d", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to create tenant: %v", err)
+	}
+
+	// 2. Создаем бакет через HTTP-запрос
+	bucketName := fmt.Sprintf("test-handler-bucket-%d", time.Now().UnixNano())
 	req := httptest.NewRequest(http.MethodPut, "/"+bucketName, nil)
+	// Передаем tenant_id в контекст, как это делает middleware
+	req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenant.ID))
+
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -47,9 +42,8 @@ func TestHandleCreateBucket(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	// В тесте используется дефолтный tenant_id (захардкожен в хендлере)
-	tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
-	bucket, err := repo.GetBucket(context.Background(), tenantID, bucketName)
+	// 3. Проверяем, что бакет создан в БД
+	bucket, err := repo.GetBucket(ctx, tenant.ID, bucketName)
 	if err != nil {
 		t.Fatalf("bucket not found in db: %v", err)
 	}
@@ -57,13 +51,13 @@ func TestHandleCreateBucket(t *testing.T) {
 		t.Errorf("expected bucket name '%s', got '%s'", bucketName, bucket.Name)
 	}
 
-	// Убираем за собой
-	repo.DeleteBucket(context.Background(), tenantID, bucketName)
+	// Убираем за собой (опционально, cleanup контейнера удалит всё)
+	repo.DeleteBucket(ctx, tenant.ID, bucketName)
 }
 
 func TestHandleListObjectsV2_FromDB(t *testing.T) {
-	repo := setupTestRepo(t)
-	defer repo.(*metadata.PostgresRepo).Close()
+	repo, cleanup := metadata.SetupTestRepoWithContainer(t)
+	defer cleanup()
 
 	store := &mockStore{}
 	handler := NewObjectHandler(store, repo)
