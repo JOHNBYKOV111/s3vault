@@ -1,0 +1,30 @@
+# deploy/grafana/provisioning/datasources/datasource.yml
+#
+# Provisioning data source для Grafana.
+# Grafana читает этот файл при старте (volume mount в docker-compose.yml)
+# и автоматически создаёт Prometheus data source.
+#
+# Ключевые моменты:
+#   - uid фиксирован ("prometheus"), чтобы JSON дашборда мог ссылаться на него
+#     детерминированно. Без фиксированного uid Grafana сгенерирует случайный,
+#     и дашборд не найдёт источник данных.
+#   - access: proxy — Grafana backend проксирует запросы к Prometheus.
+#     Браузер не ходит в Prometheus напрямую (правильно за firewall).
+#   - isDefault: true — этот источник выбран по умолчанию для новых панелей.
+#   - editable: false — файл источник истины; изменения через UI будут
+#     перезаписаны при следующем provisioning sweep.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "15s"
+      httpMethod: POST
+      manageAlerts: false

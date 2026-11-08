@@ -1,0 +1,42 @@
+# deploy/prometheus/prometheus.yml
+#
+# Конфигурация Prometheus для s3vault.
+# Запускается в Docker (см. deploy/docker-compose.yml),
+# конфиг монтируется в /etc/prometheus/prometheus.yml.
+
+global:
+  # Как часто скрейпим таргеты. 15s — стандарт для SLO/алертов.
+  scrape_interval: 15s
+  # Как часто пересчитываем правила алертов (alerts.yml).
+  evaluation_interval: 15s
+  # Таймаут на один скрейп. Не больше scrape_interval.
+  scrape_timeout: 10s
+  # Метка, которая добавляется ко всем рядам. Помогает отличать окружения,
+  # если позже добавим staging/prod.
+  external_labels:
+    monitor: "s3vault"
+    environment: "local"
+
+# Файлы с правилами алертов. Путь внутри контейнера —
+# мы монтируем ./prometheus/alerts.yml в /etc/prometheus/alerts.yml.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # 1. Сам Prometheus — чтобы видеть его здоровье (up, scrape_duration, и т.д.).
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 2. s3vault — наш сервер.
+  # Сервер запускается как сервис в docker-compose.yml.
+  # Внутри Docker-сети он доступен по имени сервиса "s3vault" на порту 9000.
+  # Метрики отдаются на /metrics (см. observability.MetricsHandler в main.go).
+  - job_name: "s3vault"
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ["s3vault:9000"]
+        labels:
+          service: "s3vault"
+          component: "gateway"

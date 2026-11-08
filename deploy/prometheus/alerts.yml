@@ -1,0 +1,167 @@
+# deploy/prometheus/alerts.yml
+#
+# Правила алертов для s3vault.
+# SLO: 99.9% успешных запросов (2xx/3xx) за 30 дней.
+# Error budget: 0.1%.
+#
+# Multi-window burn-rate алерты по Google SRE Workbook:
+#   - Fast burn:  1h/5m,  burn rate > 14.4x  (2% бюджета за 1 час)  -> critical/page
+#   - Slow burn:  6h/30m, burn rate > 6x     (5% бюджета за 6 часов) -> warning/ticket
+#
+# Метрики:
+#   http_requests_total{method, path, status} — RED counter из metrics.go
+#   status — строковый HTTP-код ("200", "500", ...)
+
+groups:
+  - name: s3vault-slo
+    interval: 30s
+    rules:
+      # ============================================================
+      # RECORDING RULES: burn rate для каждого окна
+      # ============================================================
+      # Burn rate = (доля ошибок за окно) / (1 - SLO target).
+      # SLO target = 0.999, значит budget fraction = 0.001.
+      # Burn rate = error_ratio / 0.001.
+
+      # Ошибки: всё, что не 2xx и не 3xx (то есть 4xx и 5xx).
+      # Для S3 4xx — это ошибки клиента (недоступный ключ, неверная подпись),
+      # но для SLO доступности считаем их "плохими" событиями:
+      # клиент не получил полезный ответ. Это консервативный подход.
+      # Если хочешь считать только 5xx — замени regex на "5..".
+
+      - record: s3vault:error_ratio:5m
+        expr: |
+          sum(rate(http_requests_total{status!~"2..|3.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+
+      - record: s3vault:error_ratio:30m
+        expr: |
+          sum(rate(http_requests_total{status!~"2..|3.."}[30m]))
+          /
+          sum(rate(http_requests_total[30m]))
+
+      - record: s3vault:error_ratio:1h
+        expr: |
+          sum(rate(http_requests_total{status!~"2..|3.."}[1h]))
+          /
+          sum(rate(http_requests_total[1h]))
+
+      - record: s3vault:error_ratio:6h
+        expr: |
+          sum(rate(http_requests_total{status!~"2..|3.."}[6h]))
+          /
+          sum(rate(http_requests_total[6h]))
+
+      # Burn rate = error_ratio / budget_fraction (0.001)
+      - record: s3vault:burn_rate:5m
+        expr: s3vault:error_ratio:5m / 0.001
+
+      - record: s3vault:burn_rate:30m
+        expr: s3vault:error_ratio:30m / 0.001
+
+      - record: s3vault:burn_rate:1h
+        expr: s3vault:error_ratio:1h / 0.001
+
+      - record: s3vault:burn_rate:6h
+        expr: s3vault:error_ratio:6h / 0.001
+
+      # Error budget remaining (доля от 1.0).
+      # 1.0 = бюджет не тронут, 0.0 = исчерпан, <0 = превышен.
+      - record: s3vault:error_budget:remaining_ratio
+        expr: |
+          1 - (
+            (1 - (
+              sum(rate(http_requests_total{status=~"2..|3.."}[30d]))
+              /
+              sum(rate(http_requests_total[30d]))
+            )) / 0.001
+          )
+
+      # ============================================================
+      # ALERTING RULES: multi-window burn rate
+      # ============================================================
+
+      # Fast burn: 14.4x over 1h, confirmed by 5m.
+      # 2% бюджета за 1 час. Critical, page.
+      - alert: S3VaultErrorBudgetFastBurn
+        expr: |
+          s3vault:burn_rate:1h > 14.4
+          and
+          s3vault:burn_rate:5m > 14.4
+        for: 2m
+        labels:
+          severity: critical
+          service: s3vault
+          slo: availability
+          window: "1h/5m"
+        annotations:
+          summary: "Fast error budget burn on s3vault ({{ $value | printf \"%.2f\" }}x)"
+          description: |
+            Burn rate {{ $value | printf "%.2f" }}x exceeds 14.4x.
+            At this rate, 2% of the 30-day error budget is consumed in 1 hour.
+          runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#fast-burn"
+
+      # Slow burn: 6x over 6h, confirmed by 30m.
+      # 5% бюджета за 6 часов. Warning, ticket.
+      - alert: S3VaultErrorBudgetSlowBurn
+        expr: |
+          s3vault:burn_rate:6h > 6
+          and
+          s3vault:burn_rate:30m > 6
+        for: 15m
+        labels:
+          severity: warning
+          service: s3vault
+          slo: availability
+          window: "6h/30m"
+        annotations:
+          summary: "Slow error budget burn on s3vault ({{ $value | printf \"%.2f\" }}x)"
+          description: |
+            Burn rate {{ $value | printf "%.2f" }}x exceeds 6x.
+            At this rate, 5% of the 30-day error budget is consumed in 6 hours.
+            Investigate during business hours.
+          runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#slow-burn"
+
+      # ============================================================
+      # Вспомогательные алерты (не SLO, но полезны для эксплуатации)
+      # ============================================================
+
+      # Сервис недоступен: Prometheus не может скрейпить /metrics.
+      - alert: S3VaultDown
+        expr: up{job="s3vault"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: s3vault
+        annotations:
+          summary: "s3vault is down"
+          description: "Prometheus cannot scrape {{ $labels.instance }} (job={{ $labels.job }}) for more than 2 minutes."
+          runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#service-down"
+
+      # Высокая latency p99: > 1s в течение 5 минут.
+      - alert: S3VaultHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          service: s3vault
+        annotations:
+          summary: "High p99 latency on s3vault ({{ $value | humanizeDuration }})"
+          description: "p99 HTTP request duration exceeds 1s for 5 minutes."
+          runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#high-latency"
+
+      # Очередь jobs растёт: возможна проблема с воркерами.
+      - alert: S3VaultJobsQueueDepthHigh
+        expr: s3_jobs_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: s3vault
+        annotations:
+          summary: "Jobs queue depth is high ({{ $value }})"
+          description: "s3_jobs_queue_depth > 100 for 5 minutes. Check worker health and DLQ."
+          runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#jobs-queue"

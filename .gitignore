@@ -1,0 +1,55 @@
+# Tools (promtool, архивы)
+.tools/
+
+# AWS CLI (сотни МБ, не нужны в репо)
+aws/
+
+# Runtime data
+data/
+data-replica/
+deploy/prometheus/promdata/
+deploy/grafana/grafanadata/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+s3vault
+redis-sentinel-check
+
+# Test / coverage
+coverage.out
+*.test
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Multipart (runtime)
+multipart/
+
+# AWS CLI archive
+awscliv2.zip
+
+# Test / runtime files
+big.txt
+bigfile.bin
+cli-test.txt
+
+# Local helper scripts (if not needed in repo)
+check_structure.sh
+
+# Downloaded test artifacts
+downloaded.bin
+downloaded.txt

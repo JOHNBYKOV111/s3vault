@@ -1,0 +1,83 @@
+# deploy/docker-compose.sentinel.yml
+#
+# Отдельный стенд для chaos-теста Sentinel failover.
+# Поднимается независимо от основного docker-compose.yml:
+#   docker compose -f deploy/docker-compose.sentinel.yml up -d
+#
+# Схема:
+#   redis-master          — master, порт 6379 (внутри сети)
+#   redis-replica         — replica master'а, порт 6379 (внутри сети)
+#   sentinel              — Redis Sentinel, порт 26379, следит за mymaster
+#   redis-sentinel-check  — тестовый клиент через Sentinel (одноразовый,
+#                           запускается через `docker compose run`)
+
+services:
+  redis-master:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica:
+    image: redis:7-alpine
+    command: ["redis-server", "--replicaof", "redis-master", "6379", "--appendonly", "no"]
+    restart: unless-stopped
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sentinel:
+    image: redis:7-alpine
+    command: ["redis-sentinel", "/etc/sentinel/sentinel.conf"]
+    restart: unless-stopped
+    ports:
+      # Пробрасываем Sentinel на хост для отладки (redis-cli -p 26379).
+      # Тестовый клиент ходит в sentinel:26379 внутри Docker-сети,
+      # но порт полезен для ручной проверки SENTINEL get-master-addr-by-name.
+      - "26379:26379"
+    volumes:
+      # ВАЖНО: без :ro. Sentinel переписывает конфиг при старте
+      # (добавляет myid, known-replica, epoch). С :ro падает
+      # с "Read-only file system. Exiting...".
+      - ./sentinel/sentinel.conf:/etc/sentinel/sentinel.conf
+    depends_on:
+      redis-master:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-sentinel-check:
+    build:
+      # Контекст сборки — корень проекта (нужны go.mod, go.sum).
+      context: ..
+      dockerfile: cmd/redis-sentinel-check/Dockerfile
+    image: deploy-redis-sentinel-check:latest
+    # Одноразовый клиент: не перезапускается, живёт пока не остановят.
+    restart: "no"
+    depends_on:
+      sentinel:
+        condition: service_healthy
+    # Клиент ходит в sentinel:26379 внутри Docker-сети.
+    # Флаги передаются через `docker compose run ... -- -sentinel ...`.
+    # Entrypoint — /app/redis-sentinel-check, флаги — в args.
+    command:
+      - "-sentinel"
+      - "sentinel:26379"
+      - "-master"
+      - "mymaster"
+      - "-interval"
+      - "1s"

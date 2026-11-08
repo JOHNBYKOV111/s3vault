@@ -1,0 +1,116 @@
+# deploy/prometheus/slo_test.yml
+#
+# Unit-тесты для правил алертов s3vault (alerts.yml).
+# Запуск: promtool test rules deploy/prometheus/slo_test.yml
+#
+# Тесты используют фейковые временные ряды (input_series) и проверяют,
+# срабатывает ли алерт в ожидаемый момент времени (alert_rule_test).
+# Это официальный способ тестирования правил Prometheus.
+
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # Тест 1: Fast burn должен сработать при 100% ошибок.
+  # 100% ошибок = burn rate 1000x (100% / 0.1%).
+  # Алерт S3VaultErrorBudgetFastBurn (порог 14.4x) обязан сработать.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      # Все запросы — 500-е (ошибки).
+      - series: 'http_requests_total{status="500"}'
+        values: '0+100x10' # 100 запросов в минуту, всего 10 минут
+
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: S3VaultErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: s3vault
+              slo: availability
+              window: "1h/5m"
+            exp_annotations:
+              summary: "Fast error budget burn on s3vault (1000.00x)"
+              description: |
+                Burn rate 1000.00x exceeds 14.4x.
+                At this rate, 2% of the 30-day error budget is consumed in 1 hour.
+              runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#fast-burn"
+
+  # ============================================================
+  # Тест 2: Slow burn должен сработать при 50% ошибок.
+  # 50% ошибок = burn rate 500x (50% / 0.1%).
+  # Алерт S3VaultErrorBudgetSlowBurn (порог 6x) обязан сработать.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      # 50 запросов в минуту с 500-й, 50 с 200-й.
+      - series: 'http_requests_total{status="500"}'
+        values: '0+50x40' # 40 минут данных
+      - series: 'http_requests_total{status="200"}'
+        values: '0+50x40'
+
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: S3VaultErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: s3vault
+              slo: availability
+              window: "6h/30m"
+            exp_annotations:
+              summary: "Slow error budget burn on s3vault (500.00x)"
+              description: |
+                Burn rate 500.00x exceeds 6x.
+                At this rate, 5% of the 30-day error budget is consumed in 6 hours.
+                Investigate during business hours.
+              runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#slow-burn"
+
+  # ============================================================
+  # Тест 3: При нормальной работе (0.05% ошибок) алерты НЕ срабатывают.
+  # 0.05% ошибок = burn rate 0.5x (0.05% / 0.1%).
+  # Пороги 14.4x и 6x не достигнуты, алертов быть не должно.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      # 1 ошибка на 2000 запросов (0.05%).
+      # 1 запрос с 500-й в минуту, 1999 с 200-й.
+      - series: 'http_requests_total{status="500"}'
+        values: '0+1x60' # 60 минут данных
+      - series: 'http_requests_total{status="200"}'
+        values: '0+1999x60'
+
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: S3VaultErrorBudgetFastBurn
+        exp_alerts: [] # пусто — алерт не должен сработать
+
+      - eval_time: 30m
+        alertname: S3VaultErrorBudgetSlowBurn
+        exp_alerts: [] # пусто — алерт не должен сработать
+
+  # ============================================================
+  # Тест 4: S3VaultDown срабатывает, когда up{job="s3vault"} == 0.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'up{job="s3vault", instance="host.docker.internal:9000"}'
+        values: '0x10' # 10 минут down
+
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: S3VaultDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: s3vault
+              job: s3vault
+              instance: host.docker.internal:9000
+            exp_annotations:
+              summary: "s3vault is down"
+              description: "Prometheus cannot scrape host.docker.internal:9000 (job=s3vault) for more than 2 minutes."
+              runbook_url: "https://github.com/johnbykov1989/s3vault/blob/main/docs/runbook.md#service-down"

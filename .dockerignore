@@ -1,0 +1,11 @@
+.git
+.github
+.tools
+data
+data-replica
+deploy/prometheus/promdata
+deploy/grafana/grafanadata
+**/*_test.go
+docs
+aws
+*.md

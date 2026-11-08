@@ -1,0 +1,26 @@
+# deploy/grafana/provisioning/dashboards/dashboard.yml
+#
+# Provisioning dashboard provider для Grafana.
+# Grafana читает этот файл при старте и подхватывает JSON-дашборды
+# из указанного path (внутри контейнера).
+#
+# В docker-compose.yml мы монтируем:
+#   ./grafana/provisioning -> /etc/grafana/provisioning
+# Значит, JSON-дашборды лежат рядом с этим файлом:
+#   deploy/grafana/provisioning/dashboards/*.json
+# и видны внутри контейнера как /etc/grafana/provisioning/dashboards/*.json.
+
+apiVersion: 1
+
+providers:
+  - name: 's3vault'
+    orgId: 1
+    folder: 's3vault'
+    folderUid: 's3vault'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

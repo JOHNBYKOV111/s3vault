@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: s3vault
+      POSTGRES_PASSWORD: s3vault
+      POSTGRES_DB: s3vault
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U s3vault -d s3vault"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # На хосте порт 6379 занят marketplace-redis (другой проект).
+    # Пробрасываем наш Redis на 6380, внутри Docker-сети он всё равно redis:6379.
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  s3vault:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "9000:9000"
+    environment:
+      # Внутри Docker-сети Postgres доступен по имени сервиса, порт 5432
+      # (не 5433 — 5433 это host-проброс для локальной разработки).
+      DATABASE_URL: "postgres://s3vault:s3vault@postgres:5432/s3vault?sslmode=disable"
+      # OTLP endpoint: в проде это был бы collector. Локально — не задаём
+      # (InitTracer деградирует в warn, не падает).
+      OTLP_ENDPOINT: "localhost:4318"
+    volumes:
+      # Персистентное хранилище blob'ов (ReplicaStore: ./data и ./data-replica).
+      - blobdata:/app/data
+      - blobdata-replica:/app/data-replica
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - s3vault
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      # Provisioning: datasources + dashboard provider (YAML) + JSON-дашборды.
+      # JSON лежит в provisioning/dashboards/ (см. dashboard.yml -> options.path).
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:
+  blobdata:
+  blobdata-replica:
