@@ -92,14 +92,16 @@ func (w *WAL) flush() {
 	// Записываем все записи в файл
 	for _, record := range w.buffer {
 		if err := WriteRecord(w.file, record); err != nil {
-			// В реальном коде нужно логировать ошибку
+			// В реальном коде нужно логировать ошибку (не игнорируем молча).
+			fmt.Fprintf(os.Stderr, "wal: write record: %v\n", err)
 			continue
 		}
 	}
 
 	// Делаем fsync (group commit)
 	if err := w.file.Sync(); err != nil {
-		// В реальном коде нужно логировать ошибку
+		// В реальном коде нужно логировать ошибку (не игнорируем молча).
+		fmt.Fprintf(os.Stderr, "wal: fsync: %v\n", err)
 	}
 
 	// Очищаем буфер

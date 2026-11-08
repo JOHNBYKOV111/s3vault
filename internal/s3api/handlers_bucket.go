@@ -2,7 +2,9 @@ package s3api
 
 import (
 	"encoding/xml"
+	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/johnbykov1989/s3vault/internal/metadata"
@@ -51,7 +53,7 @@ func (h *ObjectHandler) HandleListObjectsV2(w http.ResponseWriter, r *http.Reque
 	if h.repo != nil {
 		// Берем tenant_id из контекста или используем дефолтный
 		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
-		if val := r.Context().Value("tenant_id"); val != nil {
+		if val := r.Context().Value(tenantIDKey); val != nil {
 			if s, ok := val.(string); ok {
 				tenantID = s
 			}
@@ -105,7 +107,11 @@ func (h *ObjectHandler) HandleListObjectsV2(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	xml.NewEncoder(w).Encode(result)
+	if err := xml.NewEncoder(w).Encode(result); err != nil {
+		// Заголовки уже отправлены, клиенту ошибку не сообщить.
+		// Логируем, чтобы не игнорировать молча.
+		fmt.Fprintf(os.Stderr, "s3api: encode ListBucketResult: %v\n", err)
+	}
 }
 
 // HandleListBuckets обрабатывает GET / (список всех бакетов)
@@ -114,7 +120,7 @@ func (h *ObjectHandler) HandleListBuckets(w http.ResponseWriter, r *http.Request
 
 	if h.repo != nil {
 		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
-		if val := r.Context().Value("tenant_id"); val != nil {
+		if val := r.Context().Value(tenantIDKey); val != nil {
 			if s, ok := val.(string); ok {
 				tenantID = s
 			}
@@ -146,7 +152,9 @@ func (h *ObjectHandler) HandleListBuckets(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	xml.NewEncoder(w).Encode(result)
+	if err := xml.NewEncoder(w).Encode(result); err != nil {
+		fmt.Fprintf(os.Stderr, "s3api: encode ListBucketsResult: %v\n", err)
+	}
 }
 
 // HandleCreateBucket обрабатывает PUT /bucket (создание бакета)
@@ -157,7 +165,7 @@ func (h *ObjectHandler) HandleCreateBucket(w http.ResponseWriter, r *http.Reques
 	}
 
 	tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
-	if val := r.Context().Value("tenant_id"); val != nil {
+	if val := r.Context().Value(tenantIDKey); val != nil {
 		if s, ok := val.(string); ok {
 			tenantID = s
 		}

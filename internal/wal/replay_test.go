@@ -34,14 +34,22 @@ func TestReplayAfterSIGKILL(t *testing.T) {
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatalf("failed to kill process: %v", err)
 	}
-	cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		// Процесс убит SIGKILL, Wait вернет *exec.ExitError. Это ожидаемо.
+		// Логируем для диагностики, но не считаем ошибкой теста.
+		t.Logf("helper process exited: %v", err)
+	}
 
 	// 3. Открываем WAL и запускаем Replay (восстановление)
 	wal, err := NewWAL(walPath)
 	if err != nil {
 		t.Fatalf("failed to open WAL: %v", err)
 	}
-	defer wal.Close()
+	defer func() {
+		if err := wal.Close(); err != nil {
+			t.Errorf("failed to close WAL: %v", err)
+		}
+	}()
 
 	records, err := wal.Replay()
 	if err != nil {

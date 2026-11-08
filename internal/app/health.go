@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"sync/atomic"
 )
 
@@ -15,7 +16,10 @@ func init() {
 func HealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"status":"ok"}`)
+	if _, err := fmt.Fprint(w, `{"status":"ok"}`); err != nil {
+		// Заголовки уже отправлены, клиенту ошибку не сообщить.
+		fmt.Fprintf(os.Stderr, "app: write healthz: %v\n", err)
+	}
 }
 
 func ReadinessCheck(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +29,10 @@ func ReadinessCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"status":"ready"}`)
+	if _, err := fmt.Fprint(w, `{"status":"ready"}`); err != nil {
+		// Заголовки уже отправлены, клиенту ошибку не сообщить.
+		fmt.Fprintf(os.Stderr, "app: write readyz: %v\n", err)
+	}
 }
 
 // SetReady позволяет менять состояние (для тестов и graceful shutdown)

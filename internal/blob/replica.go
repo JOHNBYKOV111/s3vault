@@ -44,10 +44,14 @@ func (s *ReplicaStore) Put(bucket, key string, r io.Reader) (int64, error) {
 		}
 
 		if _, err := file.Write(data); err != nil {
-			file.Close()
+			if closeErr := file.Close(); closeErr != nil {
+				fmt.Fprintf(os.Stderr, "blob: close after write error: %v\n", closeErr)
+			}
 			return 0, fmt.Errorf("write data: %w", err)
 		}
-		file.Close()
+		if err := file.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "blob: close file %s: %v\n", filePath, err)
+		}
 	}
 
 	return int64(len(data)), nil

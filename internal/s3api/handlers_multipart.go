@@ -77,7 +77,9 @@ func (h *ObjectHandler) HandleCreateMultipartUpload(w http.ResponseWriter, r *ht
 	w.Header().Set("X-Amz-Upload-Id", uploadID)
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	xml.NewEncoder(w).Encode(result)
+	if err := xml.NewEncoder(w).Encode(result); err != nil {
+		fmt.Fprintf(os.Stderr, "s3api: encode InitiateMultipartUploadResult: %v\n", err)
+	}
 }
 
 // HandleUploadPart обрабатывает PUT /bucket/key?partNumber=N&uploadId=X
@@ -112,7 +114,7 @@ func (h *ObjectHandler) HandleUploadPart(w http.ResponseWriter, r *http.Request,
 		WriteError(w, "InternalError", "Failed to create part file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Считаем SHA-256 и размер на лету
 	hasher := sha256.New()
@@ -172,7 +174,7 @@ func (h *ObjectHandler) HandleCompleteMultipartUpload(w http.ResponseWriter, r *
 		WriteError(w, "InternalError", "Failed to create object file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer objectFile.Close()
+	defer func() { _ = objectFile.Close() }()
 
 	var totalSize int64
 	hasher := sha256.New()
@@ -206,7 +208,9 @@ func (h *ObjectHandler) HandleCompleteMultipartUpload(w http.ResponseWriter, r *
 		}
 
 		n, err := io.Copy(multiWriter, partFile)
-		partFile.Close()
+		if closeErr := partFile.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "s3api: close part file %d: %v\n", part.PartNumber, closeErr)
+		}
 		if err != nil {
 			WriteError(w, "InternalError", fmt.Sprintf("Failed to copy part %d: %v", part.PartNumber, err), http.StatusInternalServerError)
 			return
@@ -237,8 +241,12 @@ func (h *ObjectHandler) HandleCompleteMultipartUpload(w http.ResponseWriter, r *
 	}
 
 	// Удаляем upload и все его части
-	_, _ = pgRepo.GetPool().Exec(r.Context(), "DELETE FROM multipart_uploads WHERE id = $1", uploadID)
-	os.RemoveAll(filepath.Join(multipartDir, uploadID))
+	if _, err := pgRepo.GetPool().Exec(r.Context(), "DELETE FROM multipart_uploads WHERE id = $1", uploadID); err != nil {
+		fmt.Fprintf(os.Stderr, "s3api: delete multipart_upload %s: %v\n", uploadID, err)
+	}
+	if err := os.RemoveAll(filepath.Join(multipartDir, uploadID)); err != nil {
+		fmt.Fprintf(os.Stderr, "s3api: remove multipart dir %s: %v\n", uploadID, err)
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -265,7 +273,9 @@ func (h *ObjectHandler) HandleAbortMultipartUpload(w http.ResponseWriter, r *htt
 	}
 
 	// Удаляем директорию с частями
-	os.RemoveAll(filepath.Join(multipartDir, uploadID))
+	if err := os.RemoveAll(filepath.Join(multipartDir, uploadID)); err != nil {
+		fmt.Fprintf(os.Stderr, "s3api: remove multipart dir %s: %v\n", uploadID, err)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

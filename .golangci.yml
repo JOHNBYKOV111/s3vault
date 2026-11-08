@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  # Версия Go, под которую таргетим. Должна совпадать с go.mod.
+  go: "1.27"
+  timeout: 5m
+
+linters:
+  # Начинаем с пустого набора, включаем только нужное (детерминированно).
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

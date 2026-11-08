@@ -61,7 +61,7 @@ func TestHeal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get: %v", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	readData, err := io.ReadAll(reader)
 	if err != nil {

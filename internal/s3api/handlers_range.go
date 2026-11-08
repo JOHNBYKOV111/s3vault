@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -80,7 +81,10 @@ func (h *ObjectHandler) HandleRange(w http.ResponseWriter, r *http.Request, read
 	if rangeReq == nil {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
 		w.WriteHeader(http.StatusOK)
-		io.Copy(w, reader)
+		if _, err := io.Copy(w, reader); err != nil {
+			// Заголовки уже отправлены, клиенту ошибку не сообщить.
+			fmt.Fprintf(os.Stderr, "s3api: io.Copy in HandleRange (full): %v\n", err)
+		}
 		return
 	}
 
@@ -100,5 +104,8 @@ func (h *ObjectHandler) HandleRange(w http.ResponseWriter, r *http.Request, read
 	w.WriteHeader(http.StatusPartialContent)
 
 	// Отдаем только запрошенный кусок
-	io.CopyN(w, reader, length)
+	if _, err := io.CopyN(w, reader, length); err != nil {
+		// Заголовки уже отправлены, клиенту ошибку не сообщить.
+		fmt.Fprintf(os.Stderr, "s3api: io.CopyN in HandleRange (partial): %v\n", err)
+	}
 }

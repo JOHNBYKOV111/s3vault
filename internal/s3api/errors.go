@@ -2,7 +2,9 @@ package s3api
 
 import (
 	"encoding/xml"
+	"fmt"
 	"net/http"
+	"os"
 )
 
 // S3Error — структура для XML-ответа об ошибке
@@ -22,5 +24,8 @@ func WriteError(w http.ResponseWriter, code string, message string, status int) 
 		Message: message,
 	}
 
-	xml.NewEncoder(w).Encode(errResp)
+	if err := xml.NewEncoder(w).Encode(errResp); err != nil {
+		// Заголовки уже отправлены, клиенту ошибку не сообщить.
+		fmt.Fprintf(os.Stderr, "s3api: encode S3Error: %v\n", err)
+	}
 }

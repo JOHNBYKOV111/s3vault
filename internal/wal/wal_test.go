@@ -16,7 +16,11 @@ func TestWAL_AppendAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create WAL: %v", err)
 	}
-	defer wal.Close()
+	defer func() {
+		if err := wal.Close(); err != nil {
+			t.Errorf("failed to close WAL: %v", err)
+		}
+	}()
 
 	// 1. Пишем несколько записей
 	records := [][]byte{

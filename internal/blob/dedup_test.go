@@ -3,7 +3,9 @@ package blob
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"testing"
 	"time"
 
@@ -147,7 +149,10 @@ func TestDedupStore(t *testing.T) {
 		t.Fatalf("failed to get file1: %v", err)
 	}
 	readData, err := io.ReadAll(reader)
-	reader.Close()
+	if closeErr := reader.Close(); closeErr != nil {
+		// Логируем, но не прерываем тест: данные уже прочитаны.
+		fmt.Fprintf(os.Stderr, "dedup_test: close reader: %v\n", closeErr)
+	}
 	if err != nil {
 		t.Fatalf("failed to read file1: %v", err)
 	}

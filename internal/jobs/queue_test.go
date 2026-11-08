@@ -12,6 +12,8 @@ import (
 )
 
 func setupQueueTest(t *testing.T) (*metadata.PostgresRepo, func()) {
+	t.Helper()
+
 	ctx := context.Background()
 
 	pgContainer, err := postgres.Run(ctx,
@@ -31,11 +33,13 @@ func setupQueueTest(t *testing.T) (*metadata.PostgresRepo, func()) {
 
 	connString, err := pgContainer.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
+		_ = pgContainer.Terminate(ctx)
 		t.Fatalf("failed to get connection string: %v", err)
 	}
 
 	repo, err := metadata.NewPostgresRepo(ctx, connString)
 	if err != nil {
+		_ = pgContainer.Terminate(ctx)
 		t.Fatalf("failed to create repo: %v", err)
 	}
 
@@ -54,12 +58,14 @@ func setupQueueTest(t *testing.T) (*metadata.PostgresRepo, func()) {
 		CREATE INDEX idx_jobs_status ON jobs(status) WHERE status = 'pending';
 	`
 	if _, err := repo.GetPool().Exec(ctx, migration); err != nil {
+		repo.Close()
+		_ = pgContainer.Terminate(ctx)
 		t.Fatalf("failed to apply migration: %v", err)
 	}
 
 	cleanup := func() {
 		repo.Close()
-		pgContainer.Terminate(ctx)
+		_ = pgContainer.Terminate(ctx)
 	}
 
 	return repo, cleanup

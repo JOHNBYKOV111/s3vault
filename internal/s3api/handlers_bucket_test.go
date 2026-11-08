@@ -32,8 +32,9 @@ func TestHandleCreateBucket(t *testing.T) {
 	// 2. Создаем бакет через HTTP-запрос
 	bucketName := fmt.Sprintf("test-handler-bucket-%d", time.Now().UnixNano())
 	req := httptest.NewRequest(http.MethodPut, "/"+bucketName, nil)
-	// Передаем tenant_id в контекст, как это делает middleware
-	req = req.WithContext(context.WithValue(req.Context(), "tenant_id", tenant.ID))
+	// Передаем tenant_id в контекст через приватный ключ (contextKey),
+	// чтобы избежать SA1029 (не использовать string как ключ).
+	req = req.WithContext(context.WithValue(req.Context(), tenantIDKey, tenant.ID))
 
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -51,8 +52,10 @@ func TestHandleCreateBucket(t *testing.T) {
 		t.Errorf("expected bucket name '%s', got '%s'", bucketName, bucket.Name)
 	}
 
-	// Убираем за собой (опционально, cleanup контейнера удалит всё)
-	repo.DeleteBucket(ctx, tenant.ID, bucketName)
+	// Убираем за собой (cleanup контейнера удалит всё, но проверим ошибку)
+	if err := repo.DeleteBucket(ctx, tenant.ID, bucketName); err != nil {
+		t.Logf("cleanup DeleteBucket: %v", err)
+	}
 }
 
 func TestHandleListObjectsV2_FromDB(t *testing.T) {
@@ -71,7 +74,9 @@ func TestHandleListObjectsV2_FromDB(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
-		repo.DeleteBucket(context.Background(), tenant.ID, "test-bucket-list")
+		if err := repo.DeleteBucket(context.Background(), tenant.ID, "test-bucket-list"); err != nil {
+			t.Logf("cleanup DeleteBucket: %v", err)
+		}
 	})
 
 	bucket, err := repo.CreateBucket(ctx, tenant.ID, "test-bucket-list")
@@ -86,7 +91,7 @@ func TestHandleListObjectsV2_FromDB(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/test-bucket-list?list-type=2", nil)
-	ctxWithTenant := context.WithValue(req.Context(), "tenant_id", tenant.ID)
+	ctxWithTenant := context.WithValue(req.Context(), tenantIDKey, tenant.ID)
 	req = req.WithContext(ctxWithTenant)
 
 	rr := httptest.NewRecorder()

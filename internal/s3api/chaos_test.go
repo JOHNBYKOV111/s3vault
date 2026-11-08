@@ -79,8 +79,8 @@ func TestChaosContextCancel(t *testing.T) {
 
 	// 3. Создаем pipe (медленный reader)
 	pr, pw := io.Pipe()
-	defer pr.Close()
-	defer pw.Close()
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
 
 	// 4. Запускаем PUT в горутине
 	done := make(chan error, 1)

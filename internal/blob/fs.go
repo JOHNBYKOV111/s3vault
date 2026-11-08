@@ -38,7 +38,7 @@ func (s *FSStore) Put(bucket, key string, r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to create file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Копируем данные из reader в файл (стриминг!)
 	n, err := io.Copy(file, r)

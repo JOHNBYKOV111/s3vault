@@ -14,16 +14,10 @@ import (
 )
 
 func TestHandlePut_SavesMetadata(t *testing.T) {
-	// 1. Подключаемся к реальной базе
-	connString := "postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	repo, err := metadata.NewPostgresRepo(ctx, connString)
-	if err != nil {
-		t.Fatalf("failed to connect to test db: %v", err)
-	}
-	defer repo.Close()
+	// 1. Поднимаем временный Postgres через testcontainers.
+	//    Тест не зависит от внешней БД, изолирован.
+	repo, cleanup := metadata.SetupTestRepoWithContainer(t)
+	defer cleanup()
 
 	// 2. Создаем временное хранилище на диске
 	store, err := blob.NewFSStore(t.TempDir())
@@ -43,7 +37,9 @@ func TestHandlePut_SavesMetadata(t *testing.T) {
 
 	// Уборка после теста
 	t.Cleanup(func() {
-		repo.DeleteBucket(context.Background(), tenant.ID, "test-bucket-put")
+		if err := repo.DeleteBucket(context.Background(), tenant.ID, "test-bucket-put"); err != nil {
+			t.Logf("cleanup DeleteBucket: %v", err)
+		}
 	})
 
 	bucket, err := repo.CreateBucket(dbCtx, tenant.ID, "test-bucket-put")
@@ -55,8 +51,8 @@ func TestHandlePut_SavesMetadata(t *testing.T) {
 	body := []byte("Hello, S3 Metadata!")
 	req := httptest.NewRequest(http.MethodPut, "/test-bucket-put/hello.txt", bytes.NewReader(body))
 
-	// Передаем tenant_id в контекст
-	ctxWithTenant := context.WithValue(req.Context(), "tenant_id", tenant.ID)
+	// Передаем tenant_id в контекст через приватный ключ (contextKey).
+	ctxWithTenant := context.WithValue(req.Context(), tenantIDKey, tenant.ID)
 	req = req.WithContext(ctxWithTenant)
 
 	rr := httptest.NewRecorder()

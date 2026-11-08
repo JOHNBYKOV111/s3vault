@@ -28,7 +28,9 @@ func TestWriteAndReadRecord(t *testing.T) {
 func TestReadCorruptedRecord(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte("hello wal")
-	WriteRecord(&buf, payload)
+	if err := WriteRecord(&buf, payload); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
 
 	// Портим последний байт (ломаем CRC)
 	b := buf.Bytes()

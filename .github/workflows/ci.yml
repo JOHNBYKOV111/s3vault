@@ -67,7 +67,7 @@ jobs:
     - name: Lint
       uses: golangci/golangci-lint-action@v6
       with:
-        version: latest
+        version: v2.14.0
 
     - name: Stop Postgres
       if: always()

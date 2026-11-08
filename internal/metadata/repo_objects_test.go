@@ -5,22 +5,13 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestObjectIsolation(t *testing.T) {
-	connString := "postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	repo, cleanup := SetupTestRepoWithContainer(t)
+	defer cleanup()
 
-	pool, err := pgxpool.New(ctx, connString)
-	if err != nil {
-		t.Fatalf("failed to connect to db: %v", err)
-	}
-	defer pool.Close()
-
-	repo := &PostgresRepo{pool: pool}
+	ctx := context.Background()
 
 	// 1. Создаем двух арендаторов с уникальными именами
 	tenantAName := fmt.Sprintf("tenant-a-isolation-%d", time.Now().UnixNano())
@@ -28,14 +19,22 @@ func TestObjectIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create tenant A: %v", err)
 	}
-	defer pool.Exec(ctx, "DELETE FROM tenants WHERE id = $1", tenantA.ID)
+	defer func() {
+		if _, err := repo.GetPool().Exec(ctx, "DELETE FROM tenants WHERE id = $1", tenantA.ID); err != nil {
+			t.Logf("cleanup tenant A: %v", err)
+		}
+	}()
 
 	tenantBName := fmt.Sprintf("tenant-b-isolation-%d", time.Now().UnixNano())
 	tenantB, err := repo.CreateTenant(ctx, tenantBName)
 	if err != nil {
 		t.Fatalf("failed to create tenant B: %v", err)
 	}
-	defer pool.Exec(ctx, "DELETE FROM tenants WHERE id = $1", tenantB.ID)
+	defer func() {
+		if _, err := repo.GetPool().Exec(ctx, "DELETE FROM tenants WHERE id = $1", tenantB.ID); err != nil {
+			t.Logf("cleanup tenant B: %v", err)
+		}
+	}()
 
 	// 2. Создаем бакеты для каждого
 	bucketA, err := repo.CreateBucket(ctx, tenantA.ID, "bucket-a")
@@ -68,8 +67,14 @@ func TestObjectIsolation(t *testing.T) {
 		t.Errorf("expected key 'secret.txt', got '%s'", obj.Key)
 	}
 
-	// Убираем за собой
-	pool.Exec(ctx, "DELETE FROM objects WHERE bucket_id = $1", bucketA.ID)
-	pool.Exec(ctx, "DELETE FROM buckets WHERE id = $1", bucketA.ID)
-	pool.Exec(ctx, "DELETE FROM buckets WHERE id = $1", bucketB.ID)
+	// Убираем за собой (cleanup контейнера удалит всё, но проверим ошибки)
+	if _, err := repo.GetPool().Exec(ctx, "DELETE FROM objects WHERE bucket_id = $1", bucketA.ID); err != nil {
+		t.Logf("cleanup objects: %v", err)
+	}
+	if _, err := repo.GetPool().Exec(ctx, "DELETE FROM buckets WHERE id = $1", bucketA.ID); err != nil {
+		t.Logf("cleanup bucket A: %v", err)
+	}
+	if _, err := repo.GetPool().Exec(ctx, "DELETE FROM buckets WHERE id = $1", bucketB.ID); err != nil {
+		t.Logf("cleanup bucket B: %v", err)
+	}
 }

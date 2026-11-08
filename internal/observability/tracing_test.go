@@ -18,7 +18,11 @@ func TestTracing(t *testing.T) {
 	tp := trace.NewTracerProvider(
 		trace.WithSyncer(exporter),
 	)
-	defer tp.Shutdown(context.Background())
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			t.Logf("failed to shutdown tracer provider: %v", err)
+		}
+	}()
 
 	// 3. Устанавливаем глобальный tracer
 	otel.SetTracerProvider(tp)

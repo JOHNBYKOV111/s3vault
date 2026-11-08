@@ -45,7 +45,7 @@ func TestReplicaStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get: %v", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	readData, err := io.ReadAll(reader)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestReplicaStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get after removing dir A: %v", err)
 	}
-	defer reader2.Close()
+	defer func() { _ = reader2.Close() }()
 
 	readData2, err := io.ReadAll(reader2)
 	if err != nil {

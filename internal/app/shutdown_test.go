@@ -29,7 +29,7 @@ func TestGracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	// Запускаем сервер на этом listener
 	go func() {

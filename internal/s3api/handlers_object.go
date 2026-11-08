@@ -124,9 +124,9 @@ func (h *ObjectHandler) handlePut(w http.ResponseWriter, r *http.Request, bucket
 	teeReader := io.TeeReader(r.Body, hasher)
 
 	// 1. Если envelope encryption включен — шифруем данные
-	var dataToStore io.Reader = teeReader
+	// ST1023: убрали `var dataToStore io.Reader = ...`, используем приведение.
+	dataToStore := io.Reader(teeReader)
 	var keyID string
-	var err error
 
 	if h.env != nil {
 		// Читаем все данные в память (для шифрования)
@@ -158,7 +158,7 @@ func (h *ObjectHandler) handlePut(w http.ResponseWriter, r *http.Request, bucket
 	// 3. Сохраняем метаданные в базу (с keyID)
 	if h.repo != nil {
 		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
-		if val := r.Context().Value("tenant_id"); val != nil {
+		if val := r.Context().Value(tenantIDKey); val != nil {
 			if s, ok := val.(string); ok {
 				tenantID = s
 			}
@@ -193,7 +193,7 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 		WriteError(w, "InternalError", "Failed to get object: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	seeker, ok := reader.(io.ReadSeeker)
 	if !ok {
@@ -206,7 +206,10 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 		WriteError(w, "InternalError", "Failed to get file size", http.StatusInternalServerError)
 		return
 	}
-	seeker.Seek(0, io.SeekStart)
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+		WriteError(w, "InternalError", "Failed to seek to start", http.StatusInternalServerError)
+		return
+	}
 
 	info, err := h.store.Stat(bucket, key)
 	if err == nil {
@@ -216,7 +219,7 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 	// Получаем ETag из базы (если репозиторий подключен)
 	if h.repo != nil {
 		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
-		if val := r.Context().Value("tenant_id"); val != nil {
+		if val := r.Context().Value(tenantIDKey); val != nil {
 			if s, ok := val.(string); ok {
 				tenantID = s
 			}
@@ -246,5 +249,9 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 	}
 
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		// Заголовки уже отправлены, клиенту ошибку не сообщить.
+		// Логируем, чтобы не игнорировать молча.
+		fmt.Fprintf(os.Stderr, "s3api: io.Copy in handleGet: %v\n", err)
+	}
 }
