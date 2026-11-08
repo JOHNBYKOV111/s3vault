@@ -9,9 +9,9 @@
 #   2. Запустить тестовый клиент (сервис redis-sentinel-check) в Docker-сети,
 #      который ходит через Sentinel и логирует, к какому master подключён.
 #   3. Дождаться, пока клиент увидит master (OK).
-#   4. Убить redis-master (docker compose kill).
-#   5. Дождаться, пока Sentinel повысит replica до master
-#      (SENTINEL get-master-addr-by-name mymaster → новый адрес).
+#   4. Имитировать падение Redis-процесса (shutdown nosave) — не убиваем
+#      контейнер, чтобы не сломать bridge-сеть Docker и не менять IP-адреса.
+#   5. Дождаться, пока Sentinel повысит replica до master.
 #   6. Проверить, что клиент переподключился: в логах есть
 #      "FAILOVER: was <old>, now <new>".
 #   7. Погасить стенд (docker compose down -v).
@@ -32,6 +32,7 @@ COMPOSE_FILE="${ROOT_DIR}/deploy/docker-compose.sentinel.yml"
 CLIENT_SERVICE="redis-sentinel-check"
 LOG_FILE="$(mktemp -t sentinel-client-XXXXXX.log)"
 CLIENT_PID=""
+MASTER_CONTAINER_ID=""
 
 # --- params ---
 SENTINEL_NAME="mymaster"
@@ -55,6 +56,11 @@ cleanup() {
     if [[ -n "${CLIENT_PID}" ]] && kill -0 "${CLIENT_PID}" 2>/dev/null; then
         kill -TERM "${CLIENT_PID}" 2>/dev/null || true
         wait "${CLIENT_PID}" 2>/dev/null || true
+    fi
+    # Возвращаем restart-политику master'а (если контейнер ещё существует).
+    # Это нужно, чтобы стенд был в исходном состоянии после теста.
+    if [[ -n "${MASTER_CONTAINER_ID}" ]]; then
+        docker update --restart=unless-stopped "${MASTER_CONTAINER_ID}" >/dev/null 2>&1 || true
     fi
     log "cleanup: docker compose down -v"
     docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -119,10 +125,21 @@ done
 OLD_MASTER="$(grep '\[OK\]' "${LOG_FILE}" | head -1 | sed -n 's/.*master=\([^ ]*\).*/\1/p')"
 log "old master: ${OLD_MASTER}"
 
-# --- 4. kill master ---
-log "step 4: kill redis-master"
-docker compose -f "${COMPOSE_FILE}" kill redis-master
-ok "redis-master killed"
+# --- 4. имитировать падение Redis-процесса (shutdown nosave) ---
+log "step 4: shutdown redis-master (nosave)"
+MASTER_CONTAINER_ID="$(docker compose -f "${COMPOSE_FILE}" ps -q redis-master)"
+if [[ -z "${MASTER_CONTAINER_ID}" ]]; then
+    fail "redis-master container not found"
+    exit 1
+fi
+# Временно отключаем restart, чтобы Docker не поднял контейнер обратно
+# сразу после shutdown (иначе Sentinel отменит failover).
+docker update --restart=no "${MASTER_CONTAINER_ID}" >/dev/null
+# Имитируем падение Redis-процесса, а не убийство контейнера.
+# Сеть Docker не ломается, IP-адреса не меняются.
+docker compose -f "${COMPOSE_FILE}" exec -T redis-master \
+    redis-cli -p 6379 shutdown nosave || true
+ok "redis-master shutdown (nosave)"
 
 # --- 5. дождаться повышения replica ---
 log "step 5: wait for failover (timeout ${WAIT_FAILOVER_TIMEOUT}s)"
