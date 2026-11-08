@@ -154,6 +154,17 @@ jobs:
       env:
         PGPASSWORD: s3vault
 
+    - name: Seed test tenant
+      run: |
+        # TestS3Conformance использует дефолтный tenantID из handlers_bucket.go.
+        # В e2e job миграции создают таблицы, но не tenant'а. Создаём его явно.
+        PGPASSWORD=s3vault psql \
+          -h localhost -p 5433 -U s3vault -d s3vault \
+          -v ON_ERROR_STOP=1 \
+          -c "INSERT INTO tenants (id, name) VALUES ('3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b', 'default') ON CONFLICT (id) DO NOTHING;"
+      env:
+        PGPASSWORD: s3vault
+
     - name: Start s3vault
       run: |
         DATABASE_URL="postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable" \
