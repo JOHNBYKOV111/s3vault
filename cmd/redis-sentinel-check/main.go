@@ -9,13 +9,9 @@
 // Запуск:
 //
 //	go run ./cmd/redis-sentinel-check \
-//	  -sentinel sentinel:26379 \
+//	  -sentinel 127.0.0.1:26379 \
 //	  -master mymaster \
 //	  -interval 1s
-//
-// Или на хосте (если sentinel проброшен на localhost:26379):
-//
-//	go run ./cmd/redis-sentinel-check -sentinel localhost:26379
 //
 // Утилита пишет в stdout строки формата:
 //
@@ -41,7 +37,7 @@ import (
 
 func main() {
 	var (
-		sentinelAddrs = flag.String("sentinel", "localhost:26379", "comma-separated Sentinel addresses")
+		sentinelAddrs = flag.String("sentinel", "127.0.0.1:26379", "comma-separated Sentinel addresses")
 		masterName    = flag.String("master", "mymaster", "Sentinel master name")
 		interval      = flag.Duration("interval", 1*time.Second, "ping interval")
 		password      = flag.String("password", "", "Redis password (optional)")

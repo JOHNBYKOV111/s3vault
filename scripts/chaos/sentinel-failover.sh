@@ -6,20 +6,29 @@
 #
 # Сценарий:
 #   1. Поднять стенд: redis-master + redis-replica + sentinel.
-#   2. Запустить тестовый клиент (сервис redis-sentinel-check) в Docker-сети,
+#   2. Запустить тестовый клиент (сервис redis-sentinel-check),
 #      который ходит через Sentinel и логирует, к какому master подключён.
 #   3. Дождаться, пока клиент увидит master (OK).
 #   4. Имитировать падение Redis-процесса (shutdown nosave) — не убиваем
-#      контейнер, чтобы не сломать bridge-сеть Docker и не менять IP-адреса.
+#      контейнер, чтобы не сломать сеть и не менять IP-адреса.
 #   5. Дождаться, пока Sentinel повысит replica до master.
 #   6. Проверить, что клиент переподключился: в логах есть
 #      "FAILOVER: was <old>, now <new>".
 #   7. Погасить стенд (docker compose down -v).
 #
+# ВАЖНО: используется network_mode: "host" (см. docker-compose.sentinel.yml).
+# Master на 127.0.0.1:6381, replica на 127.0.0.1:6382, Sentinel на
+# 127.0.0.1:26379. Клиент ходит в 127.0.0.1:26379.
+# Host-сеть работает только на Linux (CI Ubuntu, Linux-хост). На Docker
+# Desktop (Windows/macOS) host-сеть ограничена — локально тест может не
+# пройти, но гоняется в CI.
+#
 # DoD Части 7: "Sentinel failover зелёный".
 #
 # Требования:
 #   - docker + docker compose v2
+#   - redis-cli на хосте (для проверки Sentinel)
+#   - Linux-хост (нативный Docker, не Docker Desktop)
 #
 # Запуск из корня проекта:
 #   ./scripts/chaos/sentinel-failover.sh
@@ -35,8 +44,9 @@ CLIENT_PID=""
 MASTER_CONTAINER_ID=""
 
 # --- params ---
+SENTINEL_ADDR="127.0.0.1:26379"
 SENTINEL_NAME="mymaster"
-SENTINEL_PORT="26379"
+MASTER_PORT="6381"
 WAIT_MASTER_TIMEOUT=60   # сек, ждём первого OK от клиента
 WAIT_FAILOVER_TIMEOUT=90 # сек, ждём повышения replica
 CHECK_INTERVAL=1         # сек, интервал опроса
@@ -58,7 +68,6 @@ cleanup() {
         wait "${CLIENT_PID}" 2>/dev/null || true
     fi
     # Возвращаем restart-политику master'а (если контейнер ещё существует).
-    # Это нужно, чтобы стенд был в исходном состоянии после теста.
     if [[ -n "${MASTER_CONTAINER_ID}" ]]; then
         docker update --restart=unless-stopped "${MASTER_CONTAINER_ID}" >/dev/null 2>&1 || true
     fi
@@ -75,11 +84,10 @@ trap cleanup EXIT INT TERM
 log "step 1: up sentinel stand"
 docker compose -f "${COMPOSE_FILE}" up -d --build
 
-# Ждём, пока sentinel начнёт отвечать на PING.
-log "waiting for sentinel on localhost:${SENTINEL_PORT}..."
+# Ждём, пока sentinel начнёт отвечать на PING (host-сеть, 127.0.0.1:26379).
+log "waiting for sentinel on ${SENTINEL_ADDR}..."
 for i in $(seq 1 30); do
-    if docker compose -f "${COMPOSE_FILE}" exec -T sentinel \
-        redis-cli -p "${SENTINEL_PORT}" ping 2>/dev/null | grep -q PONG; then
+    if redis-cli -h 127.0.0.1 -p 26379 ping 2>/dev/null | grep -q PONG; then
         ok "sentinel is up"
         break
     fi
@@ -90,10 +98,9 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# --- 2. запустить тестовый клиент в Docker-сети ---
+# --- 2. запустить тестовый клиент ---
 log "step 2: start client (service ${CLIENT_SERVICE})"
-# Клиент запускается через `docker compose run` — внутри Docker-сети,
-# где redis-master и sentinel резолвятся по именам сервисов.
+# Клиент запускается через `docker compose run` в host-сети.
 # Логи клиента пишем в файл (stdout/stderr контейнера).
 docker compose -f "${COMPOSE_FILE}" run --rm -T "${CLIENT_SERVICE}" >"${LOG_FILE}" 2>&1 &
 CLIENT_PID=$!
@@ -103,8 +110,6 @@ log "client pid=${CLIENT_PID}, log=${LOG_FILE}"
 log "step 3: wait for first OK from client (timeout ${WAIT_MASTER_TIMEOUT}s)"
 deadline=$(( $(date +%s) + WAIT_MASTER_TIMEOUT ))
 while true; do
-    # Ищем "[OK]" в любом месте строки: клиент пишет "2026/11/08 ... [OK] ping ..."
-    # (log.LstdFlags ставит таймстамп в начало). ^\[OK\] не сработал бы.
     if grep -q '\[OK\]' "${LOG_FILE}" 2>/dev/null; then
         ok "client connected to master"
         break
@@ -132,13 +137,11 @@ if [[ -z "${MASTER_CONTAINER_ID}" ]]; then
     fail "redis-master container not found"
     exit 1
 fi
-# Временно отключаем restart, чтобы Docker не поднял контейнер обратно
-# сразу после shutdown (иначе Sentinel отменит failover).
+# Временно отключаем restart, чтобы Docker не поднял контейнер обратно.
 docker update --restart=no "${MASTER_CONTAINER_ID}" >/dev/null
 # Имитируем падение Redis-процесса, а не убийство контейнера.
-# Сеть Docker не ломается, IP-адреса не меняются.
 docker compose -f "${COMPOSE_FILE}" exec -T redis-master \
-    redis-cli -p 6379 shutdown nosave || true
+    redis-cli -p "${MASTER_PORT}" shutdown nosave || true
 ok "redis-master shutdown (nosave)"
 
 # --- 5. дождаться повышения replica ---
@@ -147,10 +150,8 @@ deadline=$(( $(date +%s) + WAIT_FAILOVER_TIMEOUT ))
 NEW_MASTER=""
 while true; do
     # SENTINEL get-master-addr-by-name mymaster → "<ip>\n<port>"
-    addr="$(docker compose -f "${COMPOSE_FILE}" exec -T sentinel \
-        redis-cli -p "${SENTINEL_PORT}" \
+    addr="$(redis-cli -h 127.0.0.1 -p 26379 \
         SENTINEL get-master-addr-by-name "${SENTINEL_NAME}" 2>/dev/null || true)"
-    # Парсим: первая строка — ip, вторая — port.
     ip="$(echo "${addr}" | sed -n '1p' | tr -d '\r')"
     port="$(echo "${addr}" | sed -n '2p' | tr -d '\r')"
     if [[ -n "${ip}" && -n "${port}" && "${ip}" != "${OLD_MASTER%%:*}" ]]; then
@@ -171,7 +172,6 @@ done
 log "step 6: wait for client to reconnect to ${NEW_MASTER}"
 deadline=$(( $(date +%s) + WAIT_FAILOVER_TIMEOUT ))
 while true; do
-    # Ищем "FAILOVER: was" в любом месте строки.
     if grep -q "FAILOVER: was" "${LOG_FILE}" 2>/dev/null; then
         ok "client reconnected"
         grep "FAILOVER: was" "${LOG_FILE}" | tail -1
