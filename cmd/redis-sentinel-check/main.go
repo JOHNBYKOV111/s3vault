@@ -9,14 +9,14 @@
 // Запуск:
 //
 //	go run ./cmd/redis-sentinel-check \
-//	  -sentinel 127.0.0.1:26379 \
+//	  -sentinel 172.28.0.12:26379 \
 //	  -master mymaster \
 //	  -interval 1s
 //
 // Утилита пишет в stdout строки формата:
 //
-//	[OK]   ping  master=10.0.0.5:6379  latency=1.2ms
-//	[FAIL] ping  err=...              (во время failover)
+//	[OK]   ping  master=172.28.0.10:6379  latency=1.2ms
+//	[FAIL] ping  err=...                 (во время failover)
 //
 // sentinel-failover.sh парсит эти строки и проверяет, что после kill master
 // клиент переключился на новый master.
@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -74,7 +75,7 @@ func main() {
 		start := time.Now()
 		err := rdb.Ping(ctx).Err()
 		if err == nil {
-			lastMaster = masterAddr(ctx, rdb)
+			lastMaster = masterAddr(ctx, rdb, addrs, *masterName)
 			logger.Printf("[OK]   ping  master=%s  latency=%s", lastMaster, time.Since(start).Round(time.Microsecond))
 			break
 		}
@@ -101,7 +102,7 @@ func main() {
 				logger.Printf("[FAIL] ping  err=%v", err)
 				continue
 			}
-			cur := masterAddr(ctx, rdb)
+			cur := masterAddr(ctx, rdb, addrs, *masterName)
 			lat := time.Since(start).Round(time.Microsecond)
 			if cur != lastMaster {
 				logger.Printf("[OK]   ping  master=%s  latency=%s  (FAILOVER: was %s)", cur, lat, lastMaster)
@@ -114,16 +115,22 @@ func main() {
 }
 
 // masterAddr возвращает host:port текущего master'а, к которому подключён клиент.
-// FailoverClient не обновляет Options().Addr (там всегда "FailoverClient"),
-// поэтому спрашиваем у сервера через CLIENT INFO — там поле Addr содержит
-// полный адрес "host:port", к которому реально подключён клиент.
-func masterAddr(ctx context.Context, rdb *redis.Client) string {
-	info, err := rdb.ClientInfo(ctx).Result()
-	if err != nil || info == nil {
-		return "unknown"
-	}
-	if info.Addr != "" {
+// ClientInfo().Addr возвращает ЛОКАЛЬНЫЙ адрес клиента (например, 172.28.0.3:40034),
+// а не адрес сервера. Поэтому спрашиваем у Sentinel: SENTINEL get-master-addr-by-name
+// возвращает "<ip>\n<port>" текущего мастера (172.28.0.10:6379 или 172.28.0.11 после failover).
+func masterAddr(ctx context.Context, rdb *redis.Client, sentinelAddrs []string, masterName string) string {
+	// Идём в первый Sentinel (у нас один).
+	sentinel := redis.NewSentinelClient(&redis.Options{Addr: sentinelAddrs[0]})
+	defer func() { _ = sentinel.Close() }()
+
+	addr, err := sentinel.GetMasterAddrByName(ctx, masterName).Result()
+	if err != nil || len(addr) != 2 {
+		// Fallback: если Sentinel недоступен, пробуем ClientInfo (локальный адрес).
+		info, err2 := rdb.ClientInfo(ctx).Result()
+		if err2 != nil || info == nil || info.Addr == "" {
+			return "unknown"
+		}
 		return info.Addr
 	}
-	return "unknown"
+	return fmt.Sprintf("%s:%s", addr[0], addr[1])
 }

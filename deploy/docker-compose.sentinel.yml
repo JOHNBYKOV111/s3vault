@@ -4,49 +4,64 @@
 # Поднимается независимо от основного docker-compose.yml:
 #   docker compose -f deploy/docker-compose.sentinel.yml up -d
 #
-# ВАЖНО: используется network_mode: "host", потому что bridge-сеть ломает
-# Sentinel failover (NAT не даёт клиенту подключиться к новому мастеру
-# после повышения реплики). Host-сеть работает только на Linux (CI Ubuntu,
-# Linux-хост). На Docker Desktop (Windows/macOS) host-сеть ограничена —
-# локально тест может не пройти, но гоняется в CI.
+# ВАЖНО: используется bridge-сеть со СТАТИЧЕСКИМИ IP для master/replica/sentinel.
+# - После `docker kill redis-master` контейнер получает тот же IP
+#   (172.28.0.10), поэтому Sentinel и клиент не теряют адрес.
+# - DNS (hostname) не используется: Sentinel мониторит master по IP
+#   (172.28.0.10), поэтому "Failed to resolve hostname" не возникает.
+# - Клиент ходит в Sentinel по IP (172.28.0.12:26379), а Sentinel
+#   отдаёт IP нового мастера (172.28.0.11 после failover).
+# - У клиента статического IP НЕТ: он одноразовый (`docker compose run`),
+#   а статический IP для `run` вызывает "Address already in use".
 #
-# Порты (все на 127.0.0.1, host-сеть):
-#   redis-master          — 6381 (6379 занят marketplace-redis локально)
-#   redis-replica         — 6382 (другой порт, иначе конфликт в host-сети)
-#   sentinel              — 26379
-#   redis-sentinel-check  — тестовый клиент через Sentinel (одноразовый)
+# Схема (подсеть 172.28.0.0/16):
+#   redis-master          — 172.28.0.10, порт 6379
+#   redis-replica         — 172.28.0.11, порт 6379
+#   sentinel              — 172.28.0.12, порт 26379
+#   redis-sentinel-check  — динамический IP (тестовый клиент через Sentinel)
 
 services:
   redis-master:
     image: redis:7-alpine
-    network_mode: "host"
-    command: ["redis-server", "--port", "6381", "--appendonly", "no"]
+    command: ["redis-server", "--appendonly", "no"]
     restart: unless-stopped
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.10
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   redis-replica:
     image: redis:7-alpine
-    network_mode: "host"
-    command: ["redis-server", "--port", "6382", "--replicaof", "127.0.0.1", "6381", "--appendonly", "no"]
+    command: ["redis-server", "--replicaof", "172.28.0.10", "6379", "--appendonly", "no"]
     restart: unless-stopped
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.11
     depends_on:
       redis-master:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "6382", "ping"]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
   sentinel:
     image: redis:7-alpine
-    network_mode: "host"
     command: ["redis-sentinel", "/etc/sentinel/sentinel.conf"]
     restart: unless-stopped
+    networks:
+      redisnet:
+        ipv4_address: 172.28.0.12
+    ports:
+      # Пробрасываем Sentinel на хост для отладки (redis-cli -p 26379).
+      # В CI/локально скрипт ходит через `docker compose exec`, но порт
+      # полезен для ручной проверки.
+      - "26379:26379"
     volumes:
       # ВАЖНО: без :ro. Sentinel переписывает конфиг при старте
       # (добавляет myid, known-replica, epoch). С :ro падает
@@ -69,18 +84,28 @@ services:
       context: ..
       dockerfile: cmd/redis-sentinel-check/Dockerfile
     image: deploy-redis-sentinel-check:latest
-    network_mode: "host"
+    # Статического IP нет: клиент одноразовый (`docker compose run`),
+    # а статический IP для `run` вызывает "Address already in use".
+    networks:
+      - redisnet
     # Одноразовый клиент: не перезапускается, живёт пока не остановят.
     restart: "no"
     depends_on:
       sentinel:
         condition: service_healthy
-    # Клиент ходит в 127.0.0.1:26379 (host-сеть).
-    # Entrypoint — /app/redis-sentinel-check, флаги — в command.
+    # Клиент ходит в Sentinel по IP (172.28.0.12:26379).
+    # Sentinel отдаёт клиенту IP мастера (172.28.0.10 или 172.28.0.11).
     command:
       - "-sentinel"
-      - "127.0.0.1:26379"
+      - "172.28.0.12:26379"
       - "-master"
       - "mymaster"
       - "-interval"
       - "1s"
+
+networks:
+  redisnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

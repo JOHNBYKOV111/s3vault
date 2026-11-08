@@ -2,6 +2,9 @@ package metadata
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -12,8 +15,8 @@ import (
 )
 
 // SetupTestRepoWithContainer поднимает Postgres через testcontainers,
-// применяет миграции и возвращает *PostgresRepo + cleanup.
-// Используется в тестах пакетов metadata и s3api.
+// применяет миграции из migrations/000001_init.up.sql и возвращает
+// *PostgresRepo + cleanup. Используется в тестах пакетов metadata и s3api.
 func SetupTestRepoWithContainer(t *testing.T) (*PostgresRepo, func()) {
 	t.Helper()
 	ctx := context.Background()
@@ -45,17 +48,18 @@ func SetupTestRepoWithContainer(t *testing.T) (*PostgresRepo, func()) {
 		t.Fatalf("failed to connect to db: %v", err)
 	}
 
-	migration := `
-		CREATE TABLE tenants (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-		CREATE TABLE buckets (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(tenant_id, name));
-		CREATE TABLE objects (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), bucket_id UUID NOT NULL REFERENCES buckets(id) ON DELETE CASCADE, key TEXT NOT NULL, size BIGINT NOT NULL, etag TEXT NOT NULL, content_type TEXT, encryption_key_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(bucket_id, key));
-		CREATE TABLE audit_log (id BIGSERIAL PRIMARY KEY, tenant_id UUID, action TEXT NOT NULL, resource TEXT NOT NULL, result TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-		CREATE TABLE blobs (id TEXT PRIMARY KEY, size BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-		CREATE TABLE blob_refs (id BIGSERIAL PRIMARY KEY, object_id UUID NOT NULL REFERENCES objects(id) ON DELETE CASCADE, blob_id TEXT NOT NULL REFERENCES blobs(id) ON DELETE RESTRICT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-		CREATE TABLE jobs (id BIGSERIAL PRIMARY KEY, type TEXT NOT NULL, payload JSONB NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INT NOT NULL DEFAULT 0, last_error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-		CREATE TABLE leases (id TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
-	`
-	if _, err := pool.Exec(ctx, migration); err != nil {
+	// Ищем миграцию относительно файла testhelper.go (а не текущей директории).
+	// Это работает и для metadata, и для s3api (где migrations/ нет рядом).
+	_, thisFile, _, _ := runtime.Caller(0)
+	migrationPath := filepath.Join(filepath.Dir(thisFile), "migrations", "000001_init.up.sql")
+	migration, err := os.ReadFile(migrationPath)
+	if err != nil {
+		pool.Close()
+		_ = pgContainer.Terminate(ctx)
+		t.Fatalf("failed to read migration %s: %v", migrationPath, err)
+	}
+
+	if _, err := pool.Exec(ctx, string(migration)); err != nil {
 		pool.Close()
 		_ = pgContainer.Terminate(ctx)
 		t.Fatalf("failed to apply migration: %v", err)

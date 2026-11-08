@@ -2,38 +2,27 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestLeases(t *testing.T) {
-	connString := "postgres://s3vault:s3vault@localhost:5433/s3vault?sslmode=disable"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	repo, cleanup := SetupTestRepoWithContainer(t)
+	defer cleanup()
 
-	pool, err := pgxpool.New(ctx, connString)
-	if err != nil {
-		t.Fatalf("failed to connect to db: %v", err)
-	}
-	defer pool.Close()
-
-	repo := &PostgresRepo{pool: pool}
-
-	leaseID := "test-lease-" + time.Now().Format("150405.000000")
+	ctx := context.Background()
+	leaseID := fmt.Sprintf("test-lease-%d", time.Now().UnixNano())
 	holder1 := "worker-1"
 	holder2 := "worker-2"
 
 	// 1. Первый воркер берет блокировку
-	err = repo.AcquireLease(ctx, leaseID, holder1, 1*time.Second)
-	if err != nil {
+	if err := repo.AcquireLease(ctx, leaseID, holder1, 1*time.Second); err != nil {
 		t.Fatalf("holder1 failed to acquire lease: %v", err)
 	}
 
 	// 2. Второй воркер пытается взять ту же блокировку (должен получить ErrLeaseTaken)
-	err = repo.AcquireLease(ctx, leaseID, holder2, 1*time.Second)
-	if err != ErrLeaseTaken {
+	if err := repo.AcquireLease(ctx, leaseID, holder2, 1*time.Second); err != ErrLeaseTaken {
 		t.Errorf("expected ErrLeaseTaken, got %v", err)
 	}
 
@@ -41,21 +30,18 @@ func TestLeases(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 
 	// 4. Теперь второй воркер может взять блокировку
-	err = repo.AcquireLease(ctx, leaseID, holder2, 1*time.Second)
-	if err != nil {
+	if err := repo.AcquireLease(ctx, leaseID, holder2, 1*time.Second); err != nil {
 		t.Fatalf("holder2 failed to acquire expired lease: %v", err)
 	}
 
 	// 5. Освобождаем блокировку
-	err = repo.ReleaseLease(ctx, leaseID, holder2)
-	if err != nil {
+	if err := repo.ReleaseLease(ctx, leaseID, holder2); err != nil {
 		t.Fatalf("failed to release lease: %v", err)
 	}
 
 	// 6. Проверяем, что блокировка больше не существует
 	var count int
-	err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM leases WHERE id = $1", leaseID).Scan(&count)
-	if err != nil {
+	if err := repo.GetPool().QueryRow(ctx, "SELECT COUNT(*) FROM leases WHERE id = $1", leaseID).Scan(&count); err != nil {
 		t.Fatalf("failed to query leases: %v", err)
 	}
 	if count != 0 {
