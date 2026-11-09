@@ -53,3 +53,10 @@ check_structure.sh
 # Downloaded test artifacts
 downloaded.bin
 downloaded.txt
+
+# Python (venv, кэш)
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
