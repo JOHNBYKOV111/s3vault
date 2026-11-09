@@ -165,3 +165,23 @@ func (s *ReplicaStore) Heal(bucket, key string) error {
 
 	return nil
 }
+
+// Delete удаляет файл из всех директорий. Idempotent: если файла нет — возвращает nil.
+func (s *ReplicaStore) Delete(bucket, key string) error {
+	var lastErr error
+
+	for _, dir := range s.dirs {
+		filePath := filepath.Join(dir, bucket, key)
+		if err := os.Remove(filePath); err != nil {
+			if os.IsNotExist(err) {
+				continue // idempotent: файла не было в этой реплике
+			}
+			lastErr = err
+		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("failed to delete file: %w", lastErr)
+	}
+	return nil
+}

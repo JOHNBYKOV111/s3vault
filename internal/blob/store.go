@@ -19,4 +19,8 @@ type Store interface {
 
 	// Stat возвращает информацию о файле (размер, время изменения).
 	Stat(bucket, key string) (os.FileInfo, error)
+
+	// Delete удаляет данные по ключу.
+	// Возвращает nil, если файл удалён или его не было (idempotent).
+	Delete(bucket, key string) error
 }

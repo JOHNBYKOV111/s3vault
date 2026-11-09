@@ -114,6 +114,8 @@ func (h *ObjectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handlePut(w, r, bucket, key)
 	case http.MethodGet, http.MethodHead:
 		h.handleGet(w, r, bucket, key)
+	case http.MethodDelete:
+		h.handleDelete(w, r, bucket, key)
 	default:
 		WriteError(w, "MethodNotAllowed", "Method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -124,19 +126,16 @@ func (h *ObjectHandler) handlePut(w http.ResponseWriter, r *http.Request, bucket
 	teeReader := io.TeeReader(r.Body, hasher)
 
 	// 1. Если envelope encryption включен — шифруем данные
-	// ST1023: убрали `var dataToStore io.Reader = ...`, используем приведение.
 	dataToStore := io.Reader(teeReader)
 	var keyID string
 
 	if h.env != nil {
-		// Читаем все данные в память (для шифрования)
 		plaintext, err := io.ReadAll(teeReader)
 		if err != nil {
 			WriteError(w, "InternalError", "Failed to read body: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Шифруем
 		ciphertext, kid, err := h.env.Encrypt(plaintext)
 		if err != nil {
 			WriteError(w, "InternalError", "Failed to encrypt: "+err.Error(), http.StatusInternalServerError)
@@ -146,7 +145,7 @@ func (h *ObjectHandler) handlePut(w http.ResponseWriter, r *http.Request, bucket
 		dataToStore = strings.NewReader(string(ciphertext))
 	}
 
-	// 2. Сохраняем (зашифрованные или исходные) данные на диск
+	// 2. Сохраняем данные на диск
 	size, err := h.store.Put(bucket, key, dataToStore)
 	if err != nil {
 		WriteError(w, "InternalError", "Failed to save object: "+err.Error(), http.StatusInternalServerError)
@@ -155,7 +154,7 @@ func (h *ObjectHandler) handlePut(w http.ResponseWriter, r *http.Request, bucket
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	// 3. Сохраняем метаданные в базу (с keyID)
+	// 3. Сохраняем метаданные в базу
 	if h.repo != nil {
 		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
 		if val := r.Context().Value(tenantIDKey); val != nil {
@@ -216,7 +215,7 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 		w.Header().Set("Last-Modified", info.ModTime().UTC().Format(http.TimeFormat))
 	}
 
-	// Получаем ETag из базы (если репозиторий подключен)
+	// Получаем ETag из базы
 	if h.repo != nil {
 		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
 		if val := r.Context().Value(tenantIDKey); val != nil {
@@ -235,13 +234,16 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 		}
 	}
 
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
 	w.Header().Set("Accept-Ranges", "bytes")
 
+	// Range-запрос: Content-Length и Content-Range выставляет ТОЛЬКО HandleRange.
 	if r.Header.Get("Range") != "" {
 		h.HandleRange(w, r, seeker, fileSize, bucket, key)
 		return
 	}
+
+	// Обычный GET/HEAD: Content-Length = размер файла.
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
 
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
@@ -250,8 +252,42 @@ func (h *ObjectHandler) handleGet(w http.ResponseWriter, r *http.Request, bucket
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, reader); err != nil {
-		// Заголовки уже отправлены, клиенту ошибку не сообщить.
-		// Логируем, чтобы не игнорировать молча.
 		fmt.Fprintf(os.Stderr, "s3api: io.Copy in handleGet: %v\n", err)
 	}
+}
+
+// handleDelete удаляет объект: metadata (БД) и blob (диск).
+// S3-совместимый ответ: 204 No Content (даже если объекта не было — idempotent).
+func (h *ObjectHandler) handleDelete(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	// 1. Удаляем blob с диска (если есть).
+	if err := h.store.Delete(bucket, key); err != nil {
+		if !os.IsNotExist(err) {
+			WriteError(w, "InternalError", "Failed to delete blob: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Если blob'а нет — это ок (idempotent DELETE).
+	}
+
+	// 2. Удаляем metadata из БД (если repo подключён).
+	if h.repo != nil {
+		tenantID := "3bfb08a3-cc0e-451b-b8cb-51a5ba52a43b"
+		if val := r.Context().Value(tenantIDKey); val != nil {
+			if s, ok := val.(string); ok {
+				tenantID = s
+			}
+		}
+
+		b, err := h.repo.GetBucket(r.Context(), tenantID, bucket)
+		if err == nil {
+			if err := h.repo.DeleteObject(r.Context(), b.ID, key); err != nil {
+				if err != metadata.ErrNotFound {
+					WriteError(w, "InternalError", "Failed to delete metadata: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				// Если объекта в БД нет — idempotent, ок.
+			}
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

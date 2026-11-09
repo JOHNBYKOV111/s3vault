@@ -93,3 +93,15 @@ func (s *FSStore) Stat(bucket, key string) (os.FileInfo, error) {
 	filePath := filepath.Join(s.rootDir, bucket, key)
 	return os.Stat(filePath)
 }
+
+// Delete удаляет файл по ключу. Idempotent: если файла нет — возвращает nil.
+func (s *FSStore) Delete(bucket, key string) error {
+	filePath := filepath.Join(s.rootDir, bucket, key)
+	if err := os.Remove(filePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil // idempotent: файла не было — это не ошибка
+		}
+		return fmt.Errorf("failed to delete file: %w", err)
+	}
+	return nil
+}
