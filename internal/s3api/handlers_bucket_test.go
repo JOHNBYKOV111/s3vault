@@ -3,14 +3,13 @@ package s3api
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/johnbykov1989/s3vault/internal/blob"
 	"github.com/johnbykov1989/s3vault/internal/metadata"
 )
 
@@ -18,7 +17,11 @@ func TestHandleCreateBucket(t *testing.T) {
 	repo, cleanup := metadata.SetupTestRepoWithContainer(t)
 	defer cleanup()
 
-	store := &mockStore{}
+	// Реальный FSStore на temp dir (без mockStore).
+	store, err := blob.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create fs store: %v", err)
+	}
 	handler := NewObjectHandler(store, repo)
 
 	ctx := context.Background()
@@ -43,7 +46,8 @@ func TestHandleCreateBucket(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	// 3. Проверяем, что бакет создан в БД
+	// 3. Проверяем, что бакет создан в БД.
+	// Cleanup не нужен: testcontainers удалит контейнер целиком (вместе с БД).
 	bucket, err := repo.GetBucket(ctx, tenant.ID, bucketName)
 	if err != nil {
 		t.Fatalf("bucket not found in db: %v", err)
@@ -51,40 +55,34 @@ func TestHandleCreateBucket(t *testing.T) {
 	if bucket.Name != bucketName {
 		t.Errorf("expected bucket name '%s', got '%s'", bucketName, bucket.Name)
 	}
-
-	// Убираем за собой (cleanup контейнера удалит всё, но проверим ошибку)
-	if err := repo.DeleteBucket(ctx, tenant.ID, bucketName); err != nil {
-		t.Logf("cleanup DeleteBucket: %v", err)
-	}
 }
 
 func TestHandleListObjectsV2_FromDB(t *testing.T) {
 	repo, cleanup := metadata.SetupTestRepoWithContainer(t)
 	defer cleanup()
 
-	store := &mockStore{}
+	// Реальный FSStore на temp dir (без mockStore).
+	store, err := blob.NewFSStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create fs store: %v", err)
+	}
 	handler := NewObjectHandler(store, repo)
 
 	ctx := context.Background()
-	// Уникальное имя арендатора, чтобы не конфликтовать
+	// Уникальное имя арендатора, чтобы не конфликтовать.
 	tenantName := fmt.Sprintf("test-tenant-list-%d", time.Now().UnixNano())
 	tenant, err := repo.CreateTenant(ctx, tenantName)
 	if err != nil {
 		t.Fatalf("failed to create tenant: %v", err)
 	}
 
-	t.Cleanup(func() {
-		if err := repo.DeleteBucket(context.Background(), tenant.ID, "test-bucket-list"); err != nil {
-			t.Logf("cleanup DeleteBucket: %v", err)
-		}
-	})
-
+	// Cleanup не нужен: testcontainers удалит контейнер целиком (вместе с БД).
 	bucket, err := repo.CreateBucket(ctx, tenant.ID, "test-bucket-list")
 	if err != nil {
 		t.Fatalf("failed to create bucket: %v", err)
 	}
 
-	// Добавили "" в качестве encryptionKeyID (6-й аргумент)
+	// Добавили "" в качестве encryptionKeyID (6-й аргумент).
 	_, err = repo.PutObject(ctx, bucket.ID, "file1.txt", 100, "etag1", "text/plain", "")
 	if err != nil {
 		t.Fatalf("failed to put object: %v", err)
@@ -108,11 +106,3 @@ func TestHandleListObjectsV2_FromDB(t *testing.T) {
 		t.Errorf("expected XML to contain '<Size>100</Size>', got: %s", body)
 	}
 }
-
-// mockStore — заглушка для blob.Store, чтобы не писать на диск в тестах.
-type mockStore struct{}
-
-func (m *mockStore) Put(bucket, key string, r io.Reader) (int64, error) { return 0, nil }
-func (m *mockStore) Get(bucket, key string) (io.ReadCloser, error)      { return nil, nil }
-func (m *mockStore) List(bucket string) ([]string, error)               { return nil, nil }
-func (m *mockStore) Stat(bucket, key string) (os.FileInfo, error)       { return nil, nil }
